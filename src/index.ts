@@ -1,9 +1,9 @@
 type TimeoutId = ReturnType<typeof setTimeout>;
-
+type RequestInput = RequestInit & { input: RequestInfo | URL };
 interface PollingConfig {
   interval?: number;
   maxTimeout?: number;
-  onRequest?: (fetchInit: RequestInit) => Promise<RequestInit> | RequestInit;
+  onRequest?: (fetchInit: RequestInput) => Promise<RequestInput> | RequestInput;
   onPolling?: (response: Response) => Promise<Response | undefined> | Response | undefined;
   onAbort?: (response: Response) => Promise<void> | void;
 }
@@ -23,7 +23,7 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
     ...defaultConfig
   };
 
-  const pollingFetch = (async function(
+  const pollingFetch = (async function (
     input: RequestInfo | URL,
     init?: PollingRequestInit
   ): Promise<Response> {
@@ -46,7 +46,7 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
     }
 
     let initialResponse: Response | undefined;
-    let currentRequest: Promise<Response> | undefined;
+    // let currentRequest: Promise<Response> | undefined;
     let currentTimeout: TimeoutId | undefined;
 
     const cleanup = () => {
@@ -58,7 +58,7 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
 
     const handleAbort = async (): Promise<void> => {
       cleanup();
-      
+
       if (mergedConfig.onAbort && initialResponse) {
         try {
           await mergedConfig.onAbort(initialResponse);
@@ -77,26 +77,26 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
         });
       }
 
-      const requestInit: RequestInit = { ...init };
-      delete (requestInit as any).polling;
-
+      const requestInput: RequestInput = { input, ...init };
+      delete (requestInput as any).polling;
       if (mergedConfig.onRequest) {
         try {
-          Object.assign(requestInit, await mergedConfig.onRequest(requestInit));
+          Object.assign(requestInput, await mergedConfig.onRequest(requestInput));
         } catch (error) {
           throw error; // Propagate errors from onRequest
         }
       }
 
       try {
-        currentRequest = fetch(input, requestInit);
-        initialResponse = await currentRequest;
+        // currentRequest = fetch(input, requestInit);
+        const { input: reqInput, ...reqInit } = requestInput;
+        initialResponse = await fetch(reqInput, reqInit);;
       } catch (error) {
         throw error; // Propagate errors from fetch request
       }
 
       // If onPolling is not set, return initial response directly
-      if (!mergedConfig.onPolling) {
+      if (!mergedConfig.onPolling || !initialResponse.ok) {
         return initialResponse;
       }
 
@@ -139,12 +139,12 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
           throw error;
         }
 
-        try {
-          currentRequest = fetch(input, requestInit);
-          initialResponse = await currentRequest;
-        } catch (error) {
-          throw error; // Propagate errors from fetch request
-        }
+        // try {
+        //   currentRequest = fetch(input, requestInit);
+        //   initialResponse = await currentRequest;
+        // } catch (error) {
+        //   throw error; // Propagate errors from fetch request
+        // }
       }
     } catch (error) {
       throw error; // Propagate all errors
@@ -153,7 +153,7 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
     }
   }) as PollingFetchFunction;
 
-  pollingFetch.create = (newConfig?: PollingConfig) => 
+  pollingFetch.create = (newConfig?: PollingConfig) =>
     createPollingFetch({ ...config, ...newConfig });
 
   return pollingFetch;
@@ -163,9 +163,9 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
 const PollingFetch = createPollingFetch();
 
 export { PollingFetch, createPollingFetch };
-export type { 
-  PollingFetchFunction, 
-  PollingConfig, 
-  PollingRequestInit 
+export type {
+  PollingFetchFunction,
+  PollingConfig,
+  PollingRequestInit
 };
 export default PollingFetch;
