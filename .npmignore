@@ -1,0 +1,52 @@
+# Source code
+src/
+
+# Test related
+test/
+coverage/
+*.test.ts
+*.spec.ts
+jest.config.js
+
+# Development tool configuration
+.github/
+.vscode/
+.idea/
+.editorconfig
+.eslintrc*
+.prettierrc*
+.travis.yml
+tsconfig.json
+*.tsbuildinfo
+
+# Documentation
+docs/
+*.md
+!README.md
+!README.zh-TW.md
+!README.ja.md
+!LICENSE
+
+# Dependency management
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Others
+.DS_Store
+*.log
+.env*
+.npmrc
+.nvmrc
+.git*
+examples/
+scripts/
+
+# Source maps
+*.map
+
+# Temporary files
+.tmp/
+.temp/
+.cache/
