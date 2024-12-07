@@ -1,12 +1,12 @@
-# PollingFetch 🚀
+# PollingFetch 
 
 [繁體中文](README.zh-TW.md) | [日本語](README.ja.md)
 
-Ever wished the native Fetch API could handle long-running tasks like a pro? Say hello to PollingFetch! 🎉
+Ever wished the native Fetch API could handle long-running tasks like a pro? Say hello to PollingFetch! 
 
 This tiny but mighty library brings task management superpowers to your favorite Fetch API, making those lengthy server operations a breeze to handle. No more complex state management - just clean, elegant task handling! 
 
-## Why PollingFetch? 🤔
+## Why PollingFetch? 
 
 - **Task-First Design**: Built with real-world server operations in mind
 - **Native Fetch Feel**: Works exactly like the Fetch API you know and love
@@ -14,13 +14,13 @@ This tiny but mighty library brings task management superpowers to your favorite
 - **Battle-Tested**: Rock-solid reliability with comprehensive test coverage
 - **Zero Dependencies**: Tiny footprint, huge impact
 
-## Installation 📦
+## Installation 
 
 ```bash
 npm install polling-fetch
 ```
 
-## Quick Start ✨
+## Quick Start 
 
 ```typescript
 import { PollingFetch } from 'polling-fetch';
@@ -31,9 +31,20 @@ const response = await PollingFetch('/api/tasks/process-data', {
   body: JSON.stringify({ data: 'process this!' }),
   polling: {
     interval: 2000,  // Check every 2 seconds
-    onPolling: async (response) => {
+    onInitRespond: async (context) => {
+      // Handle initial response
+      const { status } = context.initResponse;
+      if (status === 400) {
+        throw new Error('Invalid request');
+      }
+      if (status === 200) {
+        return context.initResponse; // Done immediately
+      }
+      return undefined; // Continue to polling
+    },
+    onPolling: async (context) => {
       // Get our taskId from the initial response
-      const { taskId } = await response.clone().json();
+      const { taskId } = await context.initResponse.clone().json();
       
       // Check how it's going
       const statusResponse = await fetch(`/api/tasks/${taskId}/status`);
@@ -54,7 +65,7 @@ const response = await PollingFetch('/api/tasks/process-data', {
 const result = await response.json();
 ```
 
-## Real-World Magic ✨
+## Real-World Magic 
 
 ### Task Progress with Style
 
@@ -63,21 +74,32 @@ const response = await PollingFetch('/api/tasks/analyze', {
   method: 'POST',
   body: JSON.stringify({ data: 'analyze this!' }),
   polling: {
+    interval: 1000,
     // Add some auth magic before sending
-    onRequest: async (init) => ({
-      ...init,
+    onRequest: async (requestInput) => ({
+      ...requestInput,
       headers: {
-        ...init.headers,
+        ...requestInput.headers,
         'Authorization': `Bearer ${await getToken()}`
       }
     }),
 
+    // Handle initial response
+    onInitRespond: async (context) => {
+      const { status } = context.initResponse;
+      if (!context.initResponse.ok) {
+        throw new Error(`Failed to start task: ${status}`);
+      }
+      // Store task info in context for later use
+      const { taskId } = await context.initResponse.clone().json();
+      context.taskId = taskId;
+      return undefined; // Continue to polling
+    },
+
     // Keep an eye on the progress
-    onPolling: async (response) => {
-      const { taskId } = await response.clone().json();
-      
-      // How's it going?
-      const statusResponse = await fetch(`/api/tasks/${taskId}/status`);
+    onPolling: async (context) => {
+      // Use taskId from context
+      const statusResponse = await fetch(`/api/tasks/${context.taskId}/status`);
       const status = await statusResponse.json();
       
       // Keep the user in the loop
@@ -88,7 +110,7 @@ const response = await PollingFetch('/api/tasks/analyze', {
       switch (status.state) {
         case 'completed':
           // Success! Fetch the goodies
-          const resultResponse = await fetch(`/api/tasks/${taskId}/result`);
+          const resultResponse = await fetch(`/api/tasks/${context.taskId}/result`);
           return resultResponse;
           
         case 'failed':
@@ -117,8 +139,8 @@ try {
   const response = await PollingFetch('/api/tasks/heavy-computation', {
     signal: controller.signal,
     polling: {
-      onPolling: async (response) => {
-        const { taskId } = await response.clone().json();
+      onPolling: async (context) => {
+        const { taskId } = await context.initResponse.clone().json();
         
         const statusResponse = await fetch(`/api/tasks/${taskId}/status`);
         const status = await statusResponse.json();
@@ -128,9 +150,9 @@ try {
           return resultResponse;
         }
       },
-      onAbort: async (response) => {
+      onAbort: async (context) => {
         // Clean up our task on the server
-        const { taskId } = await response.clone().json();
+        const { taskId } = await context.initResponse.clone().json();
         await fetch(`/api/tasks/${taskId}/cancel`, {
           method: 'POST'
         });
@@ -152,8 +174,8 @@ controller.abort();
 ```typescript
 const taskFetch = PollingFetch.create({
   interval: 2000,
-  onPolling: async (response) => {
-    const { taskId } = await response.clone().json();
+  onPolling: async (context) => {
+    const { taskId } = await context.initResponse.clone().json();
     const statusResponse = await fetch(`/api/tasks/${taskId}/status`);
     const status = await statusResponse.json();
     
@@ -165,52 +187,57 @@ const taskFetch = PollingFetch.create({
 });
 ```
 
-## Awesome Features 🌟
-
-- **Task-Focused**: Built for modern task management patterns
-- **Progress Tracking**: Keep your users in the loop
-- **Smart Cleanup**: Proper cleanup on both ends
-- **Flexible API**: Adapts to your task management style
-- **TypeScript Ready**: Complete type definitions included
-
-## API Goodness
+## API Reference 
 
 ### PollingConfig
 
+The configuration object for polling behavior:
+
 ```typescript
 interface PollingConfig {
+  // Polling interval in milliseconds (default: 1000)
   interval?: number;
-  onRequest?: (fetchInit: RequestInit) => Promise<RequestInit> | RequestInit;
-  onPolling?: (response: Response) => Promise<Response | undefined> | Response | undefined;
-  onAbort?: (response: Response) => Promise<void> | void;
+  
+  // Called before the initial request
+  onRequest?: (fetchInit: RequestInput) => Promise<RequestInput> | RequestInput;
+  
+  // Called after the initial response
+  onInitRespond?: (context: IContext) => Promise<Response | any | undefined> | Response | any | undefined;
+  
+  // Called for each polling attempt
+  onPolling?: (context: IContext) => Promise<Response | any | undefined> | Response | any | undefined;
+  
+  // Called when the request is aborted
+  onAbort?: (context: IContext) => Promise<void> | void;
 }
 ```
 
-### Task Patterns that Rock
+### Context Object
 
-1. **Task Flow**:
-   - Initial request creates task & gives you a taskId
-   - Use taskId to check progress
-   - Grab the final result when ready
+The context object passed to polling callbacks:
 
-2. **Progress Updates**:
-   - Keep checking that status endpoint
-   - Show progress to your users
-   - Handle all task states smoothly
-
-3. **Task Management**:
-   - Start with the initial request
-   - Watch progress via status endpoint
-   - Get results from the dedicated endpoint
-   - Clean up with cancellation
-
-## Why You'll Love It ❤️
-
-1. **Task Pattern Heaven**: Perfect for modern APIs
-2. **Production Ready**: Battle-tested and type-safe
-3. **Framework Happy**: Works anywhere fetch does
-4. **Developer Joy**: Built with your happiness in mind
+```typescript
+interface IContext {
+  // The initial request input
+  requestInput: RequestInput;
+  
+  // The initial response
+  initResponse: Response;
+  
+  // The latest polling response
+  pollingResponse?: Response;
+  
+  // Number of polling attempts
+  retryCount: number;
+  
+  // Timestamp when polling started
+  startTime: number;
+  
+  // Current polling configuration
+  config: PollingConfig;
+}
+```
 
 ## License
 
-MIT
+MIT  [Codeium](https://codeium.com)

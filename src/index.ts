@@ -1,11 +1,24 @@
 type TimeoutId = ReturnType<typeof setTimeout>;
 type RequestInput = RequestInit & { input: RequestInfo | URL };
+
+// 上下文接口
+interface IContext {
+  requestInput: RequestInput;
+  initResponse: Response;
+  pollingResponse?: Response;
+  retryCount: number;
+  startTime: number;
+  config: PollingConfig;
+  [key: string]: any;
+}
+
+// 完整配置接口
 interface PollingConfig {
   interval?: number;
-  maxTimeout?: number;
   onRequest?: (fetchInit: RequestInput) => Promise<RequestInput> | RequestInput;
-  onPolling?: (response: Response) => Promise<Response | undefined> | Response | undefined;
-  onAbort?: (response: Response) => Promise<void> | void;
+  onPolling?: (context: IContext) => Promise<Response | any | undefined> | Response | any | undefined;
+  onAbort?: (context: IContext) => Promise<void> | void;
+  onInitRespond?: (context: IContext) => Promise<Response | any | undefined> | Response | any | undefined;
 }
 
 interface PollingRequestInit extends RequestInit {
@@ -13,12 +26,12 @@ interface PollingRequestInit extends RequestInit {
 }
 
 interface PollingFetchFunction {
-  (input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+  (input: RequestInfo | URL, init?: PollingRequestInit): Promise<Response>;
   create: (config?: PollingConfig) => PollingFetchFunction;
 }
 
 function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction {
-  const config: Required<Pick<PollingConfig, 'interval'>> & PollingConfig = {
+  const config: PollingConfig = {
     interval: 2000,
     ...defaultConfig
   };
@@ -45,9 +58,24 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
       throw error;
     }
 
-    let initialResponse: Response | undefined;
-    // let currentRequest: Promise<Response> | undefined;
     let currentTimeout: TimeoutId | undefined;
+
+    const requestInput: RequestInput = { input, ...init };
+    delete (requestInput as any).polling;
+    if (mergedConfig.onRequest) {
+      try {
+        Object.assign(requestInput, await mergedConfig.onRequest(requestInput));
+      } catch (error) {
+        throw error;
+      }
+    }
+
+    const context: IContext = {
+      requestInput,
+      config: mergedConfig,
+      retryCount: 0,
+      startTime: Date.now()
+    } as IContext;  // Will be fully initialized after initial fetch
 
     const cleanup = () => {
       if (currentTimeout !== undefined) {
@@ -59,11 +87,11 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
     const handleAbort = async (): Promise<void> => {
       cleanup();
 
-      if (mergedConfig.onAbort && initialResponse) {
+      if (mergedConfig.onAbort && context.initResponse) {
         try {
-          await mergedConfig.onAbort(initialResponse);
+          await mergedConfig.onAbort(context);
         } catch (error) {
-          throw error; // Propagate errors from onAbort
+          throw error;
         }
       }
     };
@@ -72,32 +100,40 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
       if (init.signal) {
         init.signal.addEventListener('abort', () => {
           handleAbort().catch(error => {
-            throw error; // Propagate errors from abort handling
+            throw error;
           });
         });
       }
 
-      const requestInput: RequestInput = { input, ...init };
-      delete (requestInput as any).polling;
-      if (mergedConfig.onRequest) {
-        try {
-          Object.assign(requestInput, await mergedConfig.onRequest(requestInput));
-        } catch (error) {
-          throw error; // Propagate errors from onRequest
-        }
-      }
-
       try {
-        // currentRequest = fetch(input, requestInit);
         const { input: reqInput, ...reqInit } = requestInput;
-        initialResponse = await fetch(reqInput, reqInit);;
+        const response = await fetch(reqInput, reqInit);
+        context.initResponse = response;
+        context.pollingResponse = response;
+        
+        if (mergedConfig.onInitRespond) {
+          try {
+            const initResult = await mergedConfig.onInitRespond(context);
+            if (initResult) {
+              if (initResult instanceof Response) {
+                return initResult;
+              } else {
+                return new Response(JSON.stringify(initResult), {
+                  status: 200,
+                  headers: { 'Content-Type': 'application/json' }
+                });
+              }
+            }
+          } catch (error) {
+            throw error;
+          }
+        }
       } catch (error) {
-        throw error; // Propagate errors from fetch request
+        throw error;
       }
 
-      // If onPolling is not set, return initial response directly
-      if (!mergedConfig.onPolling || !initialResponse.ok) {
-        return initialResponse;
+      if (!mergedConfig.onPolling) {
+        return context.initResponse;
       }
 
       while (true) {
@@ -109,53 +145,39 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
         }
 
         try {
-          const pollingResult = await mergedConfig.onPolling(initialResponse);
+          const pollingResult = await mergedConfig.onPolling(context);
           if (pollingResult) {
-            return pollingResult;
-          }
-        } catch (error) {
-          throw error; // Propagate errors from onPolling
-        }
-
-        try {
-          await new Promise<void>((resolve, reject) => {
-            const tid = setTimeout(() => {
-              resolve();
-            }, mergedConfig.interval);
-            currentTimeout = tid;
-
-            if (init.signal) {
-              init.signal.addEventListener('abort', () => {
-                cleanup();
-                reject(new Error('The user aborted a request.'));
-              }, { once: true });
+            if (pollingResult instanceof Response) {
+              context.pollingResponse = pollingResult;
+              return pollingResult;
+            } else {
+              // Wrap non-Response result in a new Response
+              const wrappedResponse = new Response(JSON.stringify(pollingResult), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' }
+              });
+              context.pollingResponse = wrappedResponse;
+              return wrappedResponse;
             }
-          });
-        } catch (error) {
-          if (error instanceof Error && error.message === 'The user aborted a request.') {
-            await handleAbort();
-            throw error;
           }
+        } catch (error) {
           throw error;
         }
 
-        // try {
-        //   currentRequest = fetch(input, requestInit);
-        //   initialResponse = await currentRequest;
-        // } catch (error) {
-        //   throw error; // Propagate errors from fetch request
-        // }
+        // 等待下一次輪詢
+        context.retryCount++;
+        await new Promise((resolve) => {
+          currentTimeout = setTimeout(resolve, mergedConfig.interval);
+        });
       }
     } catch (error) {
-      throw error; // Propagate all errors
+      throw error;
     } finally {
       cleanup();
     }
   }) as PollingFetchFunction;
 
-  pollingFetch.create = (newConfig?: PollingConfig) =>
-    createPollingFetch({ ...config, ...newConfig });
-
+  pollingFetch.create = createPollingFetch;
   return pollingFetch;
 }
 
@@ -163,9 +185,3 @@ function createPollingFetch(defaultConfig?: PollingConfig): PollingFetchFunction
 const PollingFetch = createPollingFetch();
 
 export { PollingFetch, createPollingFetch };
-export type {
-  PollingFetchFunction,
-  PollingConfig,
-  PollingRequestInit
-};
-export default PollingFetch;
